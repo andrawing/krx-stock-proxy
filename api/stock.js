@@ -1,10 +1,8 @@
-// node-fetch require 제거 (Node 18+ 내장 fetch 사용으로 속도 최적화)
-
 module.exports = async (req, res) => {
-  // CORS 및 60초 캐싱 (Vercel Edge Caching 적용)
+  // CORS 처리 및 Vercel Edge Cache 설정 (5분간 응답 보존으로 속도 최적화)
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
+  res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -15,23 +13,20 @@ module.exports = async (req, res) => {
   const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
   const kst = new Date(utc + (3600000 * 9));
 
-  // 오늘 오전 9시 이전이면 어제 날짜로 기준일 세팅 (KRX 장전 데이터 미생성 방지)
-  if (kst.getHours() < 9) {
-    kst.setDate(kst.getDate() - 1);
-  }
+  // 무조건 '어제(전일)' 기준 날짜부터 탐색 시작하여 시세 수치 핑퐁 현상 방지
+  kst.setDate(kst.getDate() - 1);
 
   let targetStock = null;
   let fetchedDateStr = "";
 
-  // 최대 3번만 빠르게 탐색 (오늘 ➔ 어제 ➔ 그제)
-  for (let i = 0; i < 3; i++) {
-    if (kst.getDay() === 0) kst.setDate(kst.getDate() - 2); // 일 ➔ 금
-    else if (kst.getDay() === 6) kst.setDate(kst.getDate() - 1); // 토 ➔ 금
+  // 어제부터 역순으로 최근 4일간 영업일 데이터 탐색
+  for (let i = 0; i < 4; i++) {
+    if (kst.getDay() === 0) kst.setDate(kst.getDate() - 2); // 일요일 -> 금요일
+    else if (kst.getDay() === 6) kst.setDate(kst.getDate() - 1); // 토요일 -> 금요일
 
     const dateStr = kst.toISOString().slice(0, 10).replace(/-/g, "");
 
     try {
-      // POST 방식 호출 (KRX 규격상 응답속도가 더 안정적)
       const krxResponse = await fetch("https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd", {
         method: "POST",
         headers: {
@@ -53,14 +48,13 @@ module.exports = async (req, res) => {
 
         if (targetStock) {
           fetchedDateStr = dateStr;
-          break; // 데이터 찾으면 즉시 리턴하여 대기시간 단축
+          break; // 확정 데이터를 찾았으므로 루프 종료
         }
       }
     } catch (e) {
       console.error(e);
     }
 
-    // 데이터 없으면 하루 전으로 차감 후 재시도
     kst.setDate(kst.getDate() - 1);
   }
 
